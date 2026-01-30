@@ -27,8 +27,8 @@ class ModbusBridge:
     Modbus Bridge that handles bidirectional communication between two RS-485 buses
     through Moxa NPort devices with proper locking to prevent simultaneous transmissions.
     
-    Thread-Safety & Data Locking:
-    =============================
+    Thread-Safety & Concurrency Safety:
+    ===================================
     The bridge uses an asyncio.Lock (bus_lock) to ensure that only ONE communication
     occurs on the 485 bus at a time. This prevents:
     

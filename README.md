@@ -13,7 +13,7 @@ The bridge connects:
 
 - ✅ **Bidirectional bridging**: TCP → Port 1 and Port 2 → Port 1
 - ✅ **Message integrity**: Asyncio lock prevents data corruption from concurrent access
-- ✅ **Thread-safe operation**: Multiple TCP clients and Port 2 requests are queued and processed sequentially
+- ✅ **Concurrency-safe operation**: Multiple TCP clients and Port 2 requests are queued and processed sequentially
 - ✅ **Auto-reconnection**: Automatically reconnects to NPort devices if connection is lost
 - ✅ **Docker support**: Easy deployment with Docker and Docker Compose
 - ✅ **Configurable**: Environment-based configuration

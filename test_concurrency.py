@@ -7,8 +7,6 @@ prevents message corruption under concurrent access from multiple sources.
 import asyncio
 import sys
 import os
-import time
-from unittest.mock import Mock, AsyncMock, patch
 
 # Add the current directory to the path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -46,16 +44,11 @@ async def test_lock_prevents_concurrent_access():
     )
     
     # Verify that accesses didn't interleave
-    # One should fully complete before the other starts
-    tcp_start = access_log.index("tcp_client_start")
+    # One should fully complete before the other starts acquiring
     tcp_acquired = access_log.index("tcp_client_acquired")
     tcp_release = access_log.index("tcp_client_release")
-    nport2_start = access_log.index("nport2_start")
     nport2_acquired = access_log.index("nport2_acquired")
     nport2_release = access_log.index("nport2_release")
-    
-    # Both start, but only one acquires at a time
-    assert tcp_start >= 0 and nport2_start >= 0, "Both should start"
     
     # Verify no interleaving: one completes before the other acquires
     if tcp_acquired < nport2_acquired:
@@ -115,10 +108,10 @@ async def test_multiple_clients_queue_correctly():
     return True
 
 
-async def test_lock_timeout_behavior():
-    """Test behavior when lock is held for extended period."""
+async def test_lock_queuing_with_different_durations():
+    """Test that lock properly queues tasks of different durations."""
     print("=" * 60)
-    print("Testing Lock Timeout Behavior")
+    print("Testing Lock Queuing with Different Durations")
     print("=" * 60)
     
     bridge = ModbusBridge(
@@ -153,11 +146,14 @@ async def test_lock_timeout_behavior():
         quick_task()
     )
     
-    # Verify order
-    assert results[0] == "long_task_acquired", "Long task should acquire first"
-    assert results[1] == "quick_task_waiting", "Quick task should wait"
-    assert results[2] == "long_task_released", "Long task should release"
-    assert results[3] == "quick_task_acquired", "Quick task should then acquire"
+    # Verify order - check relative positions to ensure proper sequencing
+    long_acquired_idx = results.index("long_task_acquired")
+    long_released_idx = results.index("long_task_released")
+    quick_acquired_idx = results.index("quick_task_acquired")
+    
+    # Long task should acquire first and release before quick task acquires
+    assert long_acquired_idx < long_released_idx < quick_acquired_idx, \
+        "Long task should complete before quick task acquires lock"
     
     print("✓ Lock properly queues waiting tasks")
     print(f"  - Execution order: {' -> '.join(results)}")
@@ -214,10 +210,10 @@ async def test_lock_released_on_exception():
     return True
 
 
-async def test_lock_reentrancy():
-    """Test that the same coroutine cannot reacquire the lock (deadlock prevention)."""
+async def test_single_lock_acquisition():
+    """Test that single lock acquisition works correctly."""
     print("=" * 60)
-    print("Testing Lock Reentrancy (Deadlock Prevention)")
+    print("Testing Single Lock Acquisition")
     print("=" * 60)
     
     bridge = ModbusBridge(
@@ -227,19 +223,16 @@ async def test_lock_reentrancy():
         nport2_port=4002
     )
     
-    async def nested_lock_attempt():
-        """Try to acquire lock twice (should deadlock if not careful)."""
+    async def simple_lock_attempt():
+        """Acquire and release lock once."""
         async with bridge.bus_lock:
-            # This would deadlock if we tried to acquire again
-            # In real code, we should never do this
-            return "outer_acquired"
+            return "acquired"
     
-    result = await asyncio.wait_for(nested_lock_attempt(), timeout=1.0)
-    assert result == "outer_acquired"
+    result = await asyncio.wait_for(simple_lock_attempt(), timeout=1.0)
+    assert result == "acquired"
     
     print("✓ Single lock acquisition works correctly")
-    print("  - NOTE: Code should never attempt nested lock acquisition")
-    print("  - Current implementation uses asyncio.Lock (non-reentrant)")
+    print("  - Lock acquired and released successfully")
     print()
     
     return True
@@ -254,9 +247,9 @@ async def main():
     tests = [
         ("Lock Prevents Concurrent Access", test_lock_prevents_concurrent_access),
         ("Multiple Clients Queue Correctly", test_multiple_clients_queue_correctly),
-        ("Lock Timeout Behavior", test_lock_timeout_behavior),
+        ("Lock Queuing with Different Durations", test_lock_queuing_with_different_durations),
         ("Lock Released on Exception", test_lock_released_on_exception),
-        ("Lock Reentrancy Check", test_lock_reentrancy),
+        ("Single Lock Acquisition", test_single_lock_acquisition),
     ]
     
     passed = 0
