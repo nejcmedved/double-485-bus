@@ -12,7 +12,8 @@ The bridge connects:
 ### Key Features
 
 - ✅ **Bidirectional bridging**: TCP → Port 1 and Port 2 → Port 1
-- ✅ **Thread-safe locking**: Prevents simultaneous transmissions on the 485 bus
+- ✅ **Message integrity**: Asyncio lock prevents data corruption from concurrent access
+- ✅ **Concurrency-safe operation**: Multiple TCP clients and Port 2 requests are queued and processed sequentially
 - ✅ **Auto-reconnection**: Automatically reconnects to NPort devices if connection is lost
 - ✅ **Docker support**: Easy deployment with Docker and Docker Compose
 - ✅ **Configurable**: Environment-based configuration
@@ -181,10 +182,25 @@ python modbus_bridge.py
 
 ### Locking Mechanism
 
-The application uses an asyncio lock to ensure that only one communication can occur on the solar inverter's RS-485 bus at a time. This prevents:
-- Data corruption from simultaneous transmissions
-- Bus collisions
-- Garbled responses
+The application uses an **asyncio.Lock** to ensure that only one communication can occur on the solar inverter's RS-485 bus at a time. This prevents:
+- **Data corruption** from simultaneous transmissions
+- **Bus collisions** on the RS-485 network
+- **Garbled responses** from interleaved messages
+- **Message corruption** when multiple TCP clients and Port 2 try to access Port 1 simultaneously
+
+**How it works:**
+1. When a request arrives (from TCP client or NPort 2), the bridge acquires the bus lock
+2. The complete request-response cycle executes atomically (send request → receive response)
+3. The lock is released after the response is received or timeout occurs
+4. Queued requests are processed sequentially in order
+
+**Concurrent access handling:**
+- Multiple TCP clients can connect simultaneously, but requests are serialized
+- NPort 2 requests and TCP client requests cannot interleave
+- Each request completes fully before the next one begins
+- Lock is released even if an exception occurs, preventing deadlocks
+
+This design ensures **message integrity** and prevents the corruption that could occur if multiple sources tried to communicate with the solar inverter simultaneously.
 
 ## Troubleshooting
 
@@ -227,15 +243,38 @@ The application uses an asyncio lock to ensure that only one communication can o
 
 ```
 .
-├── modbus_bridge.py      # Main application
-├── requirements.txt      # Python dependencies
-├── config.env           # Configuration file
-├── Dockerfile           # Docker image definition
-├── docker-compose.yml   # Docker Compose configuration
-└── README.md            # This file
+├── modbus_bridge.py       # Main application
+├── test_bridge.py         # Basic functionality tests
+├── test_concurrency.py    # Concurrency and locking tests
+├── requirements.txt       # Python dependencies
+├── config.env            # Configuration file
+├── Dockerfile            # Docker image definition
+├── docker-compose.yml    # Docker Compose configuration
+└── README.md             # This file
 ```
 
 ### Testing
+
+The project includes comprehensive tests to verify functionality and thread safety:
+
+**Basic Tests** (`test_bridge.py`):
+```bash
+python test_bridge.py
+```
+- Configuration loading and validation
+- Bridge initialization
+- Lock mechanism basics
+
+**Concurrency Tests** (`test_concurrency.py`):
+```bash
+python test_concurrency.py
+```
+- Lock prevents concurrent access to the bus
+- Multiple clients queue and process correctly
+- Lock is properly released on exceptions
+- No message interleaving occurs
+
+These tests verify that the locking mechanism prevents data corruption when multiple sources (TCP clients and NPort 2) try to access the solar inverter simultaneously.
 
 For development and testing, you can use Modbus simulation tools:
 - **modpoll**: Command-line Modbus master simulator

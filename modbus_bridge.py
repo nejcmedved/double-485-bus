@@ -26,6 +26,21 @@ class ModbusBridge:
     """
     Modbus Bridge that handles bidirectional communication between two RS-485 buses
     through Moxa NPort devices with proper locking to prevent simultaneous transmissions.
+    
+    Thread-Safety & Concurrency Safety:
+    ===================================
+    The bridge uses an asyncio.Lock (bus_lock) to ensure that only ONE communication
+    occurs on the 485 bus at a time. This prevents:
+    
+    1. Message corruption from simultaneous transmissions
+    2. Bus collisions on the RS-485 network
+    3. Garbled or interleaved responses
+    4. Data race conditions between multiple TCP clients and NPort 2
+    
+    When multiple requests arrive concurrently (e.g., from different TCP clients or 
+    from both TCP and NPort 2), they are queued and processed sequentially. Each 
+    complete request-response cycle completes before the next one begins, ensuring 
+    message integrity.
     """
     
     def __init__(self, 
@@ -54,6 +69,10 @@ class ModbusBridge:
         self.timeout = timeout
         
         # Lock to prevent simultaneous transmissions on the 485 bus
+        # This is critical for preventing message corruption when multiple
+        # sources (TCP clients and NPort 2) try to access the solar inverter
+        # (NPort 1) simultaneously. The lock ensures request-response pairs
+        # complete atomically without interleaving.
         self.bus_lock = asyncio.Lock()
         
         # Connection tracking
@@ -130,7 +149,10 @@ class ModbusBridge:
                     continue
                     
                 # Acquire lock before transmitting on 485 bus
+                # This prevents simultaneous transmissions and message corruption
+                logger.debug("Acquiring bus lock for TCP client request")
                 async with self.bus_lock:
+                    logger.debug("Bus lock acquired for TCP client request")
                     try:
                         # Forward data to NPort 1 (solar inverter)
                         self.nport1_writer.write(data)
@@ -160,6 +182,8 @@ class ModbusBridge:
                         # Connection might be broken, clear it
                         self.nport1_reader = None
                         self.nport1_writer = None
+                    finally:
+                        logger.debug("Bus lock released for TCP client request")
                         
         except asyncio.TimeoutError:
             logger.info(f"TCP client {client_addr} timed out")
@@ -212,7 +236,10 @@ class ModbusBridge:
                     continue
                 
                 # Acquire lock before transmitting on 485 bus
+                # This prevents simultaneous transmissions and message corruption
+                logger.debug("Acquiring bus lock for NPort 2 request")
                 async with self.bus_lock:
+                    logger.debug("Bus lock acquired for NPort 2 request")
                     try:
                         # Forward data to NPort 1 (solar inverter)
                         self.nport1_writer.write(data)
@@ -243,6 +270,8 @@ class ModbusBridge:
                         # Connection might be broken, clear it
                         self.nport1_reader = None
                         self.nport1_writer = None
+                    finally:
+                        logger.debug("Bus lock released for NPort 2 request")
                         
             except asyncio.TimeoutError:
                 # No data available, continue loop
