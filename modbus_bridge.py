@@ -13,7 +13,6 @@ import logging
 import os
 import sys
 from typing import Optional
-import socket
 
 # Configure logging
 logging.basicConfig(
@@ -79,6 +78,14 @@ class ModbusBridge:
             logger.error(f"Failed to connect to NPort 1: {e}")
             return False
     
+    async def ensure_nport1_connected(self) -> bool:
+        """Ensure NPort 1 is connected, reconnect if necessary."""
+        if self.nport1_writer and self.nport1_reader:
+            return True
+        
+        logger.warning("NPort 1 not connected, attempting to reconnect...")
+        return await self.connect_nport1()
+    
     async def connect_nport2(self) -> bool:
         """Connect to Moxa NPort 2 (External System)."""
         try:
@@ -116,12 +123,21 @@ class ModbusBridge:
                 
                 logger.debug(f"Received {len(data)} bytes from TCP client: {data.hex()}")
                 
+                # Ensure NPort 1 connection is available, reconnect if needed
+                if not await self.ensure_nport1_connected():
+                    logger.error("Cannot establish connection to NPort 1")
+                    # Send error response to client or just continue
+                    continue
+                    
                 # Acquire lock before transmitting on 485 bus
                 async with self.bus_lock:
-                    if self.nport1_writer:
+                    try:
                         # Forward data to NPort 1 (solar inverter)
                         self.nport1_writer.write(data)
-                        await self.nport1_writer.drain()
+                        await asyncio.wait_for(
+                            self.nport1_writer.drain(),
+                            timeout=self.timeout
+                        )
                         logger.debug(f"Forwarded {len(data)} bytes to NPort 1")
                         
                         # Wait for response from solar inverter
@@ -139,8 +155,11 @@ class ModbusBridge:
                                 logger.debug(f"Sent response back to TCP client")
                         except asyncio.TimeoutError:
                             logger.warning("Timeout waiting for response from NPort 1")
-                    else:
-                        logger.error("NPort 1 connection not available")
+                    except Exception as e:
+                        logger.error(f"Error communicating with NPort 1: {e}")
+                        # Connection might be broken, clear it
+                        self.nport1_reader = None
+                        self.nport1_writer = None
                         
         except asyncio.TimeoutError:
             logger.info(f"TCP client {client_addr} timed out")
@@ -173,6 +192,12 @@ class ModbusBridge:
                 
                 if not data:
                     logger.warning("NPort 2 connection closed, reconnecting...")
+                    if self.nport2_writer:
+                        try:
+                            self.nport2_writer.close()
+                            await self.nport2_writer.wait_closed()
+                        except Exception as e:
+                            logger.error(f"Error closing NPort 2 connection: {e}")
                     self.nport2_reader = None
                     self.nport2_writer = None
                     await asyncio.sleep(1)
@@ -180,12 +205,21 @@ class ModbusBridge:
                 
                 logger.debug(f"Received {len(data)} bytes from NPort 2: {data.hex()}")
                 
+                # Ensure NPort 1 connection is available, reconnect if needed
+                if not await self.ensure_nport1_connected():
+                    logger.error("Cannot establish connection to NPort 1")
+                    await asyncio.sleep(1)
+                    continue
+                
                 # Acquire lock before transmitting on 485 bus
                 async with self.bus_lock:
-                    if self.nport1_writer:
+                    try:
                         # Forward data to NPort 1 (solar inverter)
                         self.nport1_writer.write(data)
-                        await self.nport1_writer.drain()
+                        await asyncio.wait_for(
+                            self.nport1_writer.drain(),
+                            timeout=self.timeout
+                        )
                         logger.debug(f"Forwarded {len(data)} bytes from NPort 2 to NPort 1")
                         
                         # Wait for response from solar inverter
@@ -204,14 +238,26 @@ class ModbusBridge:
                                     logger.debug(f"Sent response back to NPort 2")
                         except asyncio.TimeoutError:
                             logger.warning("Timeout waiting for response from NPort 1")
-                    else:
-                        logger.error("NPort 1 connection not available")
+                    except Exception as e:
+                        logger.error(f"Error communicating with NPort 1: {e}")
+                        # Connection might be broken, clear it
+                        self.nport1_reader = None
+                        self.nport1_writer = None
                         
             except asyncio.TimeoutError:
                 # No data available, continue loop
                 continue
             except Exception as e:
                 logger.error(f"Error in NPort 2 to NPort 1 bridge: {e}")
+                # Clean up NPort 2 connection on error
+                if self.nport2_writer:
+                    try:
+                        self.nport2_writer.close()
+                        await self.nport2_writer.wait_closed()
+                    except Exception:
+                        pass
+                self.nport2_reader = None
+                self.nport2_writer = None
                 await asyncio.sleep(1)
     
     async def start_tcp_server(self):
@@ -273,15 +319,20 @@ class ModbusBridge:
 
 def load_config():
     """Load configuration from environment variables."""
-    config = {
-        'nport1_host': os.getenv('NPORT1_HOST', '192.168.1.100'),
-        'nport1_port': int(os.getenv('NPORT1_PORT', '4001')),
-        'nport2_host': os.getenv('NPORT2_HOST', '192.168.1.101'),
-        'nport2_port': int(os.getenv('NPORT2_PORT', '4002')),
-        'listen_host': os.getenv('LISTEN_HOST', '0.0.0.0'),
-        'listen_port': int(os.getenv('LISTEN_PORT', '5020')),
-        'timeout': int(os.getenv('MODBUS_TIMEOUT', '3'))
-    }
+    try:
+        config = {
+            'nport1_host': os.getenv('NPORT1_HOST', '192.168.1.100'),
+            'nport1_port': int(os.getenv('NPORT1_PORT', '4001')),
+            'nport2_host': os.getenv('NPORT2_HOST', '192.168.1.101'),
+            'nport2_port': int(os.getenv('NPORT2_PORT', '4002')),
+            'listen_host': os.getenv('LISTEN_HOST', '0.0.0.0'),
+            'listen_port': int(os.getenv('LISTEN_PORT', '5020')),
+            'timeout': int(os.getenv('MODBUS_TIMEOUT', '3'))
+        }
+    except ValueError as e:
+        logger.error(f"Invalid configuration value: {e}")
+        logger.error("Please check that all port numbers and timeout values are valid integers")
+        sys.exit(1)
     
     logger.info("Configuration loaded:")
     logger.info(f"  NPort 1 (Solar Inverter): {config['nport1_host']}:{config['nport1_port']}")

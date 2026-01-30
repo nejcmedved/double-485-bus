@@ -91,6 +91,14 @@ MODBUS_TIMEOUT=3
 
 ## Installation & Usage
 
+### Important: Network Configuration
+
+The Docker container needs network access to your Moxa NPort devices. By default, the docker-compose.yml uses a bridge network. Depending on your setup:
+
+- **If NPort devices are on the same network as Docker host**: The default bridge network should work. Ensure the IP addresses in `config.env` are accessible from the Docker container.
+- **If you need host network access**: Modify `docker-compose.yml` to use `network_mode: host` instead of the custom bridge network. This gives the container direct access to the host's network interfaces.
+- **For production deployments**: Consider using Docker's macvlan or ipvlan network drivers for direct network access.
+
 ### Option 1: Docker Compose (Recommended)
 
 1. Clone the repository:
@@ -99,7 +107,11 @@ git clone https://github.com/nejcmedved/double-485-bus.git
 cd double-485-bus
 ```
 
-2. Edit `config.env` with your Moxa NPort settings
+2. Copy the example config and edit with your Moxa NPort settings:
+```bash
+cp config.env.example config.env
+# Edit config.env with your NPort IP addresses and ports
+```
 
 3. Build and run:
 ```bash
